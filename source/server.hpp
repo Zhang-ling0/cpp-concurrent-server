@@ -13,7 +13,8 @@
 #include <fcntl.h>
 #include <cstring>
 #include<csignal>
-
+#include<function>
+#include<syst/epoll.h>
 #define INF 0
 #define DBG 1
 #define ERR 2
@@ -399,4 +400,78 @@ public:
         fcntl(_sockfd,F_SETFL,flag|O_NONBLOCK);
     }
 };          
-
+ 
+class Channel
+{
+    private:
+        int _fd;
+        EventLoop *_loop;
+        uint32_t _events;//当前需要监控的事件
+        uint32_t _revents;//当前连接触发的事件
+        using EventCallback=std::function<void()>;
+        EventCallback _read_callback;   //可读事件被触发的回调函数
+        EventCallback _write_callback;  //可写事件被触发的回调函数
+        EventCallback _error_callback;  //错误事件被触发的回调函数
+        EventCallback _close_callback;  //连接断开事件被触发的回调函数
+        EventCallback _event_callback;  //任意事件事件被触发的回调函数
+    public:
+        Channel(EventLoop *loop,int fd)
+            :_fd(fd)
+            ,_events(0)
+            ,_revents(0)
+            ,_loop(loop)
+        {}
+        int FD()
+        {
+            return _fd;
+        }
+        uint32_t Events(){return _events;}//获取想要监控的事件
+        void SetRevents(uint32_t events){_revents=events;}//设置实际就绪的事件
+        void SetReadCallback(const EventCallback &cb) {_read_callback=cb;}
+        void SetWriteCallback(const EventCallback &cb) {_write_callback=cb;}
+        void SetErrorCallback(const EventCallback &cb) {_error_callback=cb;}
+        void SetCloseCallback(const EventCallback &cb) {_close_callback=cb;}
+        void SetEventCallback(const EventCallback &cb) {_event_callback=cb;}
+        //当前是否监控了可读
+        bool ReadAble(){return (_events & EPOLLIN);}
+        //当前是否监控了可写
+        bool WRITEAble(){return (_events & EPOLLOUT);}
+        //启动读事件监控
+        void EnableRead(){_events |= EPOLLIN;}//添加
+        //启动写事件监控
+        void EnableWrite(){_events |= EPOLLOUT;}
+        //关闭读事件
+        void DisableRead(){_events &= ~EPOLLIN;}//去掉
+        //关闭写事件
+        void DisableWrite(){_events &= ~EPOLLOUT;}
+        //移除监控
+        void Remove();//后面会调用EventLoop接口来移除监控
+        //事件处理，一旦连接了触发事件，就调用这个函数，自己触发了什么事件如何处理你自己决定
+        void HandleEvent()
+        {
+            if((_revents&EPOLLIN)||(_revents&EPOLLRDHUP)||(_revents&EPOLLPRI))
+            {
+                if(_read_callback) _read_callback();
+                //不管任何事情都调用回调函数
+                if(_event_callback) _event_callback();
+            }
+            //有可能会释放连接的操作事件，一次只能处理一个
+            if(_revents&EPOLLOUT)
+            {
+                if(_write_callback) _write_callback();
+                //不管任何事情都调用回调函数
+                if(_event_callback) _event_callback();//放到事件处理完毕后调用，刷新活跃度
+            }
+            else if(_revents&EPOLLERR)
+            {
+                if(_error_callback) _error_callback();//一旦出错，就会释放连接，因此要放到前面调用任意回调
+                if(_event_callback) _event_callback();
+            }
+            if(_revents&EPOLLHUP)
+            {
+                if(_close_callback) _close_callback();
+                if(_event_callback) _event_callback();
+            }
+        }
+        ~Channel(){}
+};
