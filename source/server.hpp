@@ -6,6 +6,13 @@
 #include <cstring>
 #include <pthread.h> 
 #include <algorithm> // 使用 std::copy 需要包含此头文件
+#include <sys/socket.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstring>
+#include<csignal>
 
 #define INF 0
 #define DBG 1
@@ -213,3 +220,183 @@ public:
         _writer_idx = 0;
     }
 };
+
+#define  MAX_LISTEN 1024
+class Socket
+{
+private:
+    int _sockfd;
+public:
+    Socket()
+        :_sockfd(-1)
+    {};
+    Socket(int fd)
+        :_sockfd(fd)
+    {};
+    ~Socket()
+    {
+        Close();
+    };
+    int Fd(){return _sockfd;}
+    // 1. 创建套接字
+    bool Create()
+    {
+        //int socket(int domain,int type,int protocol)
+        _sockfd=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+        if(_sockfd<0)
+        {
+            ERR_LOG("create sockfd failed!");
+            return false;            
+        }
+        return true;
+    }
+    // 2. 绑定地址信息
+    bool Bind(const std::string ip,uint16_t port )
+    {
+        struct sockaddr_in addr;
+        addr.sin_family=AF_INET;
+        addr.sin_port=htons(port);
+        addr.sin_addr.s_addr=inet_addr(ip.c_str());
+        socklen_t len =sizeof(struct sockaddr_in);
+        //int bind(int sockfd,struct sockaddr* addr,sockleb_t len);
+        int ret=bind(_sockfd,(struct sockaddr*)&addr,len);
+        if(ret<0)
+        {
+            ERR_LOG("bind address error");
+            return false;
+        }
+        return true;
+    }
+    // 3. 开始监听
+    bool Listen(int backlog=MAX_LISTEN)//并发监听数
+    {
+        //int listen(int backlog)
+        int ret=listen(_sockfd,backlog);
+        if(ret<0)
+        {
+            ERR_LOG("listen sockfd error");
+            return false;
+        }
+        return true;
+    }
+    // 4. 向服务器发起连接
+    bool Connect(const std::string ip,uint16_t port)
+    {
+        struct sockaddr_in addr;
+        addr.sin_family=AF_INET;
+        addr.sin_port=htons(port);
+        addr.sin_addr.s_addr = inet_addr(ip.c_str());
+        socklen_t len= sizeof(struct sockaddr_in);
+        //int ret = connect(int sockfd,struct sockaddr* addr,socklen_t len);
+        int ret = connect(_sockfd,(struct sockaddr*)& addr,len);
+        if(ret<0)
+        {
+             ERR_LOG("connect sockfd error");
+            return false;
+        }
+        return true;
+    }
+    // 5. 获取新连接
+    int Accept()
+    {
+        //int accept(int sockfd,struct sockaddr* addr,socklen* len)
+        int newfd=accept(_sockfd,NULL,NULL);
+        if(newfd<0)
+        {
+            ERR_LOG("accept sockfd error");
+            return -1;
+        }
+        return newfd;
+    }
+    // 6. 接收数据
+    ssize_t Recv(void *buf,size_t len,int flag=0)
+    {
+        //size_t recv(int sockfd,void* buf,size_t len,int flag);
+        ssize_t ret= recv(_sockfd,buf,len,flag);
+        if(ret<0)
+        {
+            //EAGAIN当前socket的接收缓冲区中没有数据了。在非阻塞的情况下才会出现这样的情况
+            //EINTR 表示当前sockfd的阻塞等待，被信号打断了
+            if(errno==EAGAIN||errno==EINTR)
+            {
+                return 0;//表示这次没有接受到数据
+            }
+            ERR_LOG("SOCKET RECV FAILED!!");
+            return -1;
+        }
+        return ret;//实际接受到数据的长度
+    }
+    ssize_t NonBlockRecv(void *buf,size_t len)
+    {
+        return Recv(buf,len,MSG_DONTWAIT);//msg_dontwait表示当前接受为非阻塞
+    }
+    // 7. 发送数据
+    ssize_t Send(const void *buf,size_t len,int flag=0)
+    {
+        //ssize_t ret=send(_sockfd,void* buf,ssize_t len;int flag);
+        ssize_t ret=send(_sockfd,buf,len,flag);
+        if (ret < 0) {
+                if (errno == EAGAIN || errno == EINTR) {
+                    return 0;
+                }
+                ERR_LOG("SOCKET SEND FAILED!!");
+                return -1;
+            }
+        return ret;//实际发送的数据长度
+    }
+    ssize_t NoneBlockSend(const void *buf,size_t len,int flag=0)
+    {
+        return Send(buf,len,MSG_DONTWAIT);//非阻塞等待
+    }
+    // 8. 关闭套接字
+    void Close()
+    {
+        if(_sockfd !=-1)
+        {
+            close(_sockfd);
+            _sockfd=-1;
+        }
+    }
+    // 9. 创建一个服务端连接
+    bool CreateServer(uint16_t port,const std::string &ip="0.0.0.0",bool block_flag=false)
+    {
+        //1. 创建套接字 2.绑定地址 3. 开始监听 4. 设置非阻塞 5.启动地址重用
+        if(Create()==false) return false;
+        if(block_flag) NonBlock();
+        ReuseAddress();
+        if(Bind(ip,port)==false) return false;
+        if(Listen()==false) return false;
+        return true;
+
+    }
+    // 10. 创建一个客户端连接
+    bool CreateClient(uint16_t port,const std::string &ip)
+    {
+        //1. 创建套接字 2.指向连接服务器
+        if(Create()==false) return false;
+        if(Connect(ip,port)==false) return false;
+        return true;
+    }
+    // 11.设置套接字选项--开启地址端口重用 1. 地址重用 2. 端口重用   
+    void ReuseAddress()
+    {
+        //int setsockopt(int fd,int leve,int optname,void* val,int vallen);
+        //给指定的套接字（fd）在特定的协议层级（level）上，设置或修改某个选项（optname）的值（val），值的长度由 vallen 决定。
+        // 在 SOL_SOCKET 层级上，为 fd 设置 SO_REUSEADDR 选项，值为 1（开启），大小为 sizeof(int)
+        int val=1;
+        setsockopt(_sockfd,SOL_SOCKET,SO_REUSEADDR,(void*)& val,sizeof(int));
+        val=1;
+        setsockopt(_sockfd,SOL_SOCKET,SO_REUSEPORT,(void*)& val,sizeof(int));
+
+    }            
+    // 12.设置套接字阻塞属性--设置为非阻塞
+    void NonBlock()
+    {
+        //int fcntl(int fd, int cmd, ... /* arg */ );
+        //先获取套接字当前的文件状态标志（F_GETFL），然后在保留原有标志的基础上，
+        // 追加非阻塞属性（O_NONBLOCK），最终将其重新设置回去（F_SETFL）。
+        int flag = fcntl(_sockfd,F_GETFL,0);
+        fcntl(_sockfd,F_SETFL,flag|O_NONBLOCK);
+    }
+};          
+
