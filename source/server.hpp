@@ -14,7 +14,10 @@
 #include <cstring>
 #include<csignal>
 #include<functional>
+#include<sys/eventfd.h> 
 #include<sys/epoll.h>
+#include <thread>
+#include <mutex>
 #include<unordered_map>
 #define INF 0
 #define DBG 1
@@ -404,11 +407,12 @@ public:
  
 
 class Poll;
+class EventLoop;
 class Channel
 {
     private:
         int _fd;
-        Poll* _loop;
+        EventLoop* _loop;
         uint32_t _events;//当前需要监控的事件
         uint32_t _revents;//当前连接触发的事件
         using EventCallback=std::function<void()>;
@@ -418,7 +422,7 @@ class Channel
         EventCallback _close_callback;  //连接断开事件被触发的回调函数
         EventCallback _event_callback;  //任意事件事件被触发的回调函数
     public:
-        Channel(Poll* loop,int fd)
+        Channel(EventLoop* loop,int fd)
             :_fd(fd)
             ,_events(0)
             ,_revents(0)
@@ -568,3 +572,135 @@ class Poller
             return;
         }
 }; 
+
+class EventLoop
+{
+    private:
+        using Functor = std::function<void()>;
+        std::thread::id _thread_id;//线程ID
+        int _event_fd;//eventfd唤醒IO事件监控可能导致阻塞
+        std::unique_ptr<Channel> _event_channel;
+        Poller _poller;//进行所有描述符的事件监控
+        std::vector<Functor> _tasks;//任务池
+        std::mutex _mutex;//实现任务池操作的线程安全
+    public:
+        //执行任务池中的所有任务   
+        void  RunAllTask()
+        {
+            std::vector<Functor> functor;
+            {
+                std::unique_lock<std::mutex> _lock(_mutex);
+                _tasks.swap(functor);
+            }
+            for (auto &f : functor)
+            {
+                f();
+            }
+            return ;        
+        }
+        //创建文件描述符用于事件通知
+        static int CreateEventFd()
+        {
+            int efd = eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);
+            if(efd<0)
+            {
+                ERR_LOG("create event failed!");
+                abort();//程序异常退出
+            }
+            return efd;
+        }
+        void ReadEventfd()
+        {
+            uint64_t res=0;
+            int ret = read(_event_fd,&res,sizeof(res));
+            if(res<0)
+            {
+                //EINTR -- 被信号打断；   EAGAIN -- 表示无数据可读
+                if (errno == EINTR || errno == EAGAIN) {
+                    return;
+                }
+                ERR_LOG("READ EVENTFD FAILED!");
+                abort();
+            }
+            return;
+        }
+        //唤醒文件描述符
+        void WeakEventFd()
+        {
+            uint16_t val=1;
+            int ret=write(_event_fd,&val,sizeof(val));
+            if(ret<0)
+            {
+                if(errno==EINTR)
+                {
+                    return;
+                }
+                ERR_LOG("read eventfd failed!");
+                abort();
+            }
+            return;
+        }
+        public:
+            EventLoop()
+                :_thread_id(std::this_thread::get_id())
+                ,_event_fd(CreateEventFd())
+                ,_event_channel(new Channel(this,_event_fd))
+            {
+                //给eventfd添加可读事件回调函数，读取eventfd事件通知次数
+                _event_channel->SetReadCallback(std::bind(&EventLoop::ReadEventfd,this));
+                //启动eventfd的读事件监控
+                _event_channel->EnableRead();
+            }
+            //事件监控->就绪事件处理->执行任务
+            void Strat()
+            {
+                while(1)
+                {
+                    //1.监控事件
+                    std::vector<Channel*> actives;
+                    _poller.Poll(&actives);
+                    //2.就绪事件处理
+                    for(auto &channel:actives)
+                    {
+                        channel->HandleEvent();
+                    }
+                    //3.执行任务
+                    RunAllTask();
+                }
+            }
+            //用于判断当前线程是否是EventLoop对应的线程
+            bool IsInLoop()
+            {
+                return (_thread_id==std::this_thread::get_id());
+            }
+            void AssertInLoop()
+            {
+                assert(_thread_id==std::this_thread::get_id());
+            }
+
+            //判断将要执行的任务是否处于当前线程中，如果是则执行，不是则压入队列
+            void RunInLoop(const Functor &cb)
+            {
+                if(IsInLoop())
+                {
+                    return cb();
+                }
+                return QueueInLoop(cb);
+            }
+            //将操作压入任务池中
+            void QueueInLoop(const Functor &cb)
+            {
+                {
+                    std::unique_lock<std::mutex> _lock(_mutex);
+                    _tasks.push_back(cb);
+                }
+                //唤醒有可能是因为事件没有就绪，而导致的epoll阻塞
+                //其实就是给eventfd写入一个数据，eventfd就会触发可读事件
+                WeakEventFd();
+            }
+            //添加/修改描述符的事件监控
+            void UpdateEvent(Channel *channel){ return _poller.UpdateEvent(channel);}
+            //移除描述符监控
+            void RemoveEvent(Channel *channel){return _poller.RemoveEvent(channel);}
+
+};
