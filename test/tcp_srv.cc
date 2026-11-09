@@ -1,49 +1,75 @@
 #include "../source/server.hpp"
+//验证监控的移除
+void HandleClose(Channel* channel)
+{
+    std::cout<<"close: "<< channel->FD()<<std::endl;
+    channel->Remove();//移除监控
+    delete channel;
+}
+//验证读
+ void HandleRead(Channel* channel)
+ {
+    int fd = channel->FD();
+    char buf[1024]={0};
+    int ret=recv(fd,buf,1023,0);
+    if(ret<=0)
+    {
+        return HandleClose(channel);
+    }
+    std::cout<<buf<<std::endl;
+    channel->EnableWrite();//启动可写事件
+ }
+ //验证写
+ void HandleWrite(Channel* channel)
+ {
+    int fd=channel->FD();
+    const char* data="哈哈哈哈哈";
+    int ret=send(fd,data,strlen(data),0);
+    if(ret<0)
+    {
+        return HandleClose(channel);
+    }
+    channel->DisableWrite(); 
+ }
+void HandleError(Channel* channel)
+ {
+    std::cout << "error: " << channel->FD() << std::endl;
+    HandleClose(channel);
+ }
+ void HandleEvent(Channel* channel)
+ {
+    std::cout<<"有一个事件！\n";
+ }
+ void Acceptor(EventLoop *loop,Channel *lst_channel)
+ {
+    int fd=lst_channel->FD();
+    int newfd=accept(fd,NULL,NULL);
+    if(newfd<0) {return;}
+    Channel* channel = new Channel(loop,newfd);
+    channel->SetReadCallback(std::bind(&HandleRead,channel));
+    channel->SetWriteCallback(std::bind(&HandleWrite,channel));
+    channel->SetCloseCallback(std::bind(&HandleClose,channel));
+    channel->SetErrorCallback(std::bind(&HandleError,channel));
+    channel->SetEventCallback(std::bind(&HandleEvent,channel));
+    channel->EnableRead();
+ }
 
 int main()
 {
-    Socket server_sock;
-    // 启动服务端，监听 8500 端口（对应你的客户端）
-    if (server_sock.CreateServer(8500) == false) {
-        ERR_LOG("服务端启动失败");
-        return -1;
-    }
-    DBG_LOG("服务端已启动，监听 8500 端口...");
-
-    while (1)
-    {
-        // 获取新连接
-        int client_fd = server_sock.Accept();
-        if (client_fd < 0) {
-            usleep(1000); // 非阻塞模式下没连接时，稍微等一下防 CPU 空转
-            continue;
-        }
-        
-        DBG_LOG("客户端已连接，fd: %d", client_fd);
-        
-        // 管理客户端连接
-        Socket client_sock(client_fd);
-        char buf[1024];
-        
-        while (1)
-        {
-            memset(buf, 0, sizeof(buf));
-            // 接收数据
-            ssize_t ret = client_sock.Recv(buf, 1023);
-            
-            if (ret > 0) {
-                DBG_LOG("收到: %s", buf);
-                // 原样发回去
-                client_sock.Send(buf, ret);
-            } else if (ret == 0) {
-                // 在阻塞模式下（如果客户端断开），或者非阻塞下暂时没数据
-                usleep(1000); 
-            } else {
-                // 真的出错了（客户端断开）
-                break; 
-            }
-        }
-        DBG_LOG("客户端断开连接");
-    }
+    //定义事件监控
+    EventLoop eventloop;
+    //定义网络套接字
+    Socket lst_sock;
+    //创建服务端套接字
+    lst_sock.CreateServer(8500);
+    //为了监听套接字，创建Channel进行事件管理
+    Channel channel(&eventloop,lst_sock.Fd());
+    //回调中，获取新连接，为新连接创建Channel并添加监控
+    channel.SetReadCallback(std::bind(&Acceptor,&eventloop,&channel));
+    //将事件启动
+    channel.EnableRead();
+    eventloop.Start();
+    lst_sock.Close();
     return 0;
+
 }

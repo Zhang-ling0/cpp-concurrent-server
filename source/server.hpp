@@ -444,16 +444,17 @@ class Channel
         //当前是否监控了可写
         bool WRITEAble(){return (_events & EPOLLOUT);}
         //启动读事件监控
-        void EnableRead(){_events |= EPOLLIN;}//添加
+        void EnableRead(){_events |= EPOLLIN;Update();}//添加
         //启动写事件监控
-        void EnableWrite(){_events |= EPOLLOUT;}
+        void EnableWrite(){_events |= EPOLLOUT;Update();}
         //关闭读事件
-        void DisableRead(){_events &= ~EPOLLIN;}//去掉
+        void DisableRead(){_events &= ~EPOLLIN;Update();}//去掉
         //关闭写事件
-        void DisableWrite(){_events &= ~EPOLLOUT;}
+        void DisableWrite(){_events &= ~EPOLLOUT;Update();}
         //移除监控
         void Remove();//后面会调用EventLoop接口来移除监控
         //事件处理，一旦连接了触发事件，就调用这个函数，自己触发了什么事件如何处理你自己决定
+        void Update();
         void HandleEvent()
         {
             if((_revents&EPOLLIN)||(_revents&EPOLLRDHUP)||(_revents&EPOLLPRI))
@@ -480,7 +481,7 @@ class Channel
                 if(_event_callback) _event_callback();
             }
         }
-        ~Channel(){}
+        
 };       
 
 #define MAX_EPOLLEVENTS 1024
@@ -555,7 +556,7 @@ class Poller
             int nfds = epoll_wait(_epfd,_evs,MAX_EPOLLEVENTS,-1);
             if(nfds<0)
             {
-                if(errno=EINTR)
+                if(errno==EINTR)
                 {
                     return;
                 }
@@ -652,7 +653,7 @@ class EventLoop
                 _event_channel->EnableRead();
             }
             //事件监控->就绪事件处理->执行任务
-            void Strat()
+            void Start()
             {
                 while(1)
                 {
@@ -702,5 +703,14 @@ class EventLoop
             void UpdateEvent(Channel *channel){ return _poller.UpdateEvent(channel);}
             //移除描述符监控
             void RemoveEvent(Channel *channel){return _poller.RemoveEvent(channel);}
+            
 
 };
+// Channel 的实现必须放在 EventLoop 之后，因为内部调用了 EventLoop 的接口
+void Channel::Update() {
+    _loop->UpdateEvent(this);
+}
+
+void Channel::Remove() {
+    _loop->RemoveEvent(this);
+}
