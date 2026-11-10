@@ -2,7 +2,7 @@
 //管理所有的连接
 std::unordered_map<uint64_t, PtrConnection> _conns;
 uint64_t conn_id = 0;
-//EventLoop base_loop;
+EventLoop loop;
 
 void ConnectionDestroy(const PtrConnection &conn) {
     _conns.erase(conn->Id());
@@ -19,18 +19,27 @@ void OnMessage(const PtrConnection &conn,Buffer* buf) {
 }
 
 
-void Acceptor(EventLoop *loop,Channel* lst_channel) {
-    int fd =lst_channel->FD();
-    int newfd=accept(fd,NULL,NULL);
-    if(newfd<0) {return;}
+void Newconnection(int fd) {
     conn_id++;
-    PtrConnection conn(new Connection(loop, conn_id, newfd));
+    PtrConnection conn(new Connection(&loop, conn_id, fd));
     conn->SetMessageCallback(std::bind(OnMessage, std::placeholders::_1, std::placeholders::_2));
     conn->SetSrvClosedCallback(std::bind(ConnectionDestroy, std::placeholders::_1));
     conn->SetConnectedCallback(std::bind(OnConnected, std::placeholders::_1));
     conn->EnableInactiveRelease(10);//启动非活跃超时销毁
     conn->Established();//就绪初始化
     _conns.insert(std::make_pair(conn_id, conn));
+}
+int main()
+{
+    srand(time(NULL));
+    //定义事件监控
+    Acceptor acceptor(&loop,8500);
+    //回调中，获取新连接，为新连接创建Channel并添加监控
+    acceptor.SetAcceptCallback(std::bind(Newconnection,std::placeholders::_1));
+    acceptor.Listen();
+    //将事件启动
+    loop.Start();
+    return 0;
 }
 // int main()
 // {
@@ -101,21 +110,23 @@ void Acceptor(EventLoop *loop,Channel* lst_channel) {
 //     channel->EnableRead();
 //  }
 
-int main()
-{
-    //定义事件监控
-    EventLoop eventloop;
-    //定义网络套接字
-    Socket lst_sock;
-    //创建服务端套接字
-    lst_sock.CreateServer(8500);
-    //为了监听套接字，创建Channel进行事件管理
-    Channel channel(&eventloop,lst_sock.Fd());
-    //回调中，获取新连接，为新连接创建Channel并添加监控
-    channel.SetReadCallback(std::bind(&Acceptor,&eventloop,&channel));
-    //将事件启动
-    channel.EnableRead();
-    eventloop.Start();
-    lst_sock.Close();
-    return 0;
-}
+// int main()
+// {
+//     srand(time(NULL));
+//     //定义事件监控
+//     EventLoop eventloop;
+//     //定义网络套接字
+//     Socket lst_sock;
+//     //创建服务端套接字
+
+//     lst_sock.CreateServer(8500);
+//     //为了监听套接字，创建Channel进行事件管理
+//     Channel channel(&eventloop,lst_sock.Fd());
+//     //回调中，获取新连接，为新连接创建Channel并添加监控
+//     channel.SetReadCallback(std::bind(&Acceptor,&eventloop,&channel));
+//     //将事件启动
+//     channel.EnableRead();
+//     eventloop.Start();
+//     lst_sock.Close();
+//     return 0;
+// }
