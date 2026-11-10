@@ -1,4 +1,5 @@
 #include "../source/server.hpp"
+
 //验证监控的移除
 void HandleClose(Channel* channel)
 {
@@ -16,7 +17,7 @@ void HandleClose(Channel* channel)
     {
         return HandleClose(channel);
     }
-    std::cout<<buf<<std::endl;
+    DBG_LOG("%s",buf);
     channel->EnableWrite();//启动可写事件
  }
  //验证写
@@ -36,21 +37,24 @@ void HandleError(Channel* channel)
     std::cout << "error: " << channel->FD() << std::endl;
     HandleClose(channel);
  }
- void HandleEvent(Channel* channel)
+ void HandleEvent(EventLoop* loop,Channel *lst_channel,uint64_t timerid)
  {
-    std::cout<<"有一个事件！\n";
+      loop->TimerRefresh(timerid);
  }
  void Acceptor(EventLoop *loop,Channel *lst_channel)
  {
     int fd=lst_channel->FD();
     int newfd=accept(fd,NULL,NULL);
     if(newfd<0) {return;}
+   uint64_t timerid=rand()%10000;
+  
     Channel* channel = new Channel(loop,newfd);
     channel->SetReadCallback(std::bind(&HandleRead,channel));
     channel->SetWriteCallback(std::bind(&HandleWrite,channel));
     channel->SetCloseCallback(std::bind(&HandleClose,channel));
     channel->SetErrorCallback(std::bind(&HandleError,channel));
-    channel->SetEventCallback(std::bind(&HandleEvent,channel));
+    channel->SetEventCallback(std::bind(&HandleEvent,loop,channel,timerid));
+    loop->TimerAdd(timerid,10,std::bind(HandleClose,channel));
     channel->EnableRead();
  }
 
