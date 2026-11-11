@@ -1355,6 +1355,45 @@ public:
         return loop;
     }
 };
+class LoopThreadPool
+{
+private:
+    int _thread_count;                  // 线程数量（也就是从 Reactor 的数量）
+    int _next_idx;                      // 轮询的下标（用于分配任务）
+    EventLoop *_baseloop;               // 主 Reactor（主线程的事件循环）
+    std::vector<LoopThread *> _threads; // 存放所有的从线程对象
+    std::vector<EventLoop *> _loops;    // 存放所有从线程内部的事件循环指针
+public:
+    LoopThreadPool(EventLoop *baseloop)
+        : _thread_count(0), _next_idx(0), _baseloop(baseloop)
+    {
+    }
+    void SetThreadCount(int count) { _thread_count = count; }
+    void Create()
+    {
+        if (_thread_count > 0)
+        {
+            _threads.resize(_thread_count); // 分配空间
+            _loops.resize(_thread_count);
+
+            for (int i = 0; i < _thread_count; i++)
+            {
+                _threads[i] = new LoopThread();     // 1. 创建一个子线程对象
+                _loops[i] = _threads[i]->GetLoop(); // 2. 拿到该子线程内部的 EventLoop 指针
+            }
+        }
+    }
+    EventLoop *NextLoop()
+    {
+        if (_thread_count == 0)
+        {
+            return _baseloop; // 如果没设置从线程，就把任务交给主线程处理（单Reactor模型）
+        }
+
+        _next_idx = (_next_idx + 1) % _thread_count; // 下标循环轮转（0,1,2...n,0,1,2...）
+        return _loops[_next_idx];                    // 返回对应的 EventLoop 指针
+    }
+};
 
 // Channel 的实现必须放在 EventLoop 之后，因为内部调用了 EventLoop 的接口
 void Channel::Update()
