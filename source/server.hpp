@@ -1227,7 +1227,7 @@ public:
     // 设置上下文--连接建立完成时进行调用
     void SetContext(const Any &context) { _context = context; }
     // 获取上下文，返回的是指针
-    Any *GetContect() { return &_context; }
+    Any *GetContext() { return &_context; }
     void SetConnectedCallback(const ConnectedCallback &cb) { _connected_callback = cb; }
     void SetMessageCallback(const MessageCallback &cb) { _message_callback = cb; }
     void SetClosedCallback(const ClosedCallback &cb) { _closed_callback = cb; }
